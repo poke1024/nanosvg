@@ -408,7 +408,7 @@ TOVEscanlineFunction tove__initPaint(
 	float opacity,
 	bool &initCacheColors) {
 
-	if (BestGradientColors::enabled(r)) {
+	if (r && BestGradientColors::enabled(r)) {
 		switch (cache->type) {
 			case NSVG_PAINT_LINEAR_GRADIENT:
 				BestGradientColors::init(cache, paint, opacity);
