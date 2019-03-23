@@ -71,6 +71,8 @@ extern "C" {
 	nsvgDelete(image);
 */
 
+#include "../tove/svg.h"
+
 enum NSVGpaintType {
 	NSVG_PAINT_NONE = 0,
 	NSVG_PAINT_COLOR = 1,
@@ -114,6 +116,7 @@ typedef struct NSVGgradientLink {
 typedef struct NSVGgradientStop {
 	unsigned int color;
 	float offset;
+	TOVEgradientStop tove;
 } NSVGgradientStop;
 
 typedef struct NSVGgradient {
@@ -142,14 +145,6 @@ typedef struct NSVGpath
 	struct NSVGpath* next;		// Pointer to next path, or NULL if last element.
 } NSVGpath;
 
-typedef unsigned char NSVGclipPathIndex;
-
-typedef struct NSVGclip
-{
-	NSVGclipPathIndex* index;	// Array of clip path indices (of related NSVGimage).
-	NSVGclipPathIndex count;	// Number of clip paths in this set.
-} NSVGclip;
-
 typedef struct NSVGshape
 {
 	char id[64];				// Optional 'id' attr of the shape or its group
@@ -167,24 +162,16 @@ typedef struct NSVGshape
 	unsigned char flags;		// Logical or of NSVG_FLAGS_* flags
 	float bounds[4];			// Tight bounding box of the shape [minx,miny,maxx,maxy].
 	NSVGpath* paths;			// Linked list of paths in the image.
-	NSVGclip clip;				// Describes all clip paths to be applied to this shape.
+	TOVEclip clip;				// Describes all clip paths to be applied to this shape.
 	struct NSVGshape* next;		// Pointer to next shape, or NULL if last element.
 } NSVGshape;
-
-typedef struct NSVGclipPath
-{
-	char id[64];				// Unique id of this clip path (from SVG).
-	NSVGclipPathIndex index;	// Unique internal index of this clip path.
-	NSVGshape* shapes;			// Linked list of shapes in this clip path.
-	struct NSVGclipPath* next;	// Pointer to next clip path or NULL.
-} NSVGclipPath;
 
 typedef struct NSVGimage
 {
 	float width;				// Width of the image.
 	float height;				// Height of the image.
 	NSVGshape* shapes;			// Linked list of shapes in the image.
-	NSVGclipPath* clipPaths;	// Linked list of clip paths in the image.
+	TOVEclipPath* clipPaths;	// Linked list of clip paths in the image.
 } NSVGimage;
 
 typedef int (*NSVGparseXML)(char* input,
@@ -396,7 +383,6 @@ int nsvg__parseXML(char* input,
 /* Simple SVG parser. */
 
 #define NSVG_MAX_ATTR 128
-#define NSVG_MAX_CLIP_PATHS 255 // also note NSVGclipPathIndex
 
 enum NSVGgradientUnits {
 	NSVG_USER_SPACE = 0,
@@ -474,7 +460,7 @@ typedef struct NSVGattrib
 	char hasFill;
 	char hasStroke;
 	char visible;
-	NSVGclipPathIndex clipPathCount;
+	TOVEclipPathIndex clipPathCount;
 } NSVGattrib;
 
 typedef struct NSVGparser
@@ -493,8 +479,8 @@ typedef struct NSVGparser
 	float dpi;
 	char pathFlag;
 	char defsFlag;
-	NSVGclipPath* clipPath;
-	NSVGclipPathIndex clipPathStack[NSVG_MAX_CLIP_PATHS];
+	TOVEclipPath* clipPath;
+	TOVEclipPathIndex clipPathStack[TOVE_MAX_CLIP_PATHS];
 } NSVGparser;
 
 static void nsvg__xformIdentity(float* t)
@@ -1021,11 +1007,11 @@ static void nsvg__addShape(NSVGparser* p)
 
 	shape->clip.count = attr->clipPathCount;
 	if (shape->clip.count > 0) {
-		shape->clip.index = (NSVGclipPathIndex*)malloc(
-			attr->clipPathCount * sizeof(NSVGclipPathIndex));
+		shape->clip.index = (TOVEclipPathIndex*)malloc(
+			attr->clipPathCount * sizeof(TOVEclipPathIndex));
 		if (shape->clip.index == NULL) goto error;
 		memcpy(shape->clip.index, p->clipPathStack,
-			attr->clipPathCount * sizeof(NSVGclipPathIndex));
+			attr->clipPathCount * sizeof(TOVEclipPathIndex));
 	}
 
 	// Calculate shape bounds
@@ -1783,36 +1769,6 @@ static int nsvg__parseStrokeDashArray(NSVGparser* p, const char* str, float* str
 	return count;
 }
 
-static NSVGclipPath* nsvg__createClipPath(const char* name, int index)
-{
-	NSVGclipPath* clipPath = (NSVGclipPath*)malloc(sizeof(NSVGclipPath));
-	if (clipPath == NULL) return NULL;
-	memset(clipPath, 0, sizeof(NSVGclipPath));
-	strncpy(clipPath->id, name, 63);
-	clipPath->id[63] = '\0';
-	clipPath->index = index;
-	return clipPath;
-}
-
-static NSVGclipPath* nsvg__findClipPath(NSVGparser* p, const char* name)
-{
-	int i = 0;
-	NSVGclipPath** link;
-
-	link = &p->image->clipPaths;
-	while (*link != NULL) {
-		if (strcmp((*link)->id, name) == 0) {
-			break;
-		}
-		link = &(*link)->next;
-		i++;
-	}
-	if (*link == NULL) {
-		*link = nsvg__createClipPath(name, i);
-	}
-	return *link;
-}
-
 static void nsvg__parseStyle(NSVGparser* p, const char* str);
 
 static int nsvg__parseAttr(NSVGparser* p, const char* name, const char* value)
@@ -1874,10 +1830,10 @@ static int nsvg__parseAttr(NSVGparser* p, const char* name, const char* value)
 		nsvg__parseTransform(xform, value);
 		nsvg__xformPremultiply(attr->xform, xform);
 	} else if (strcmp(name, "clip-path") == 0) {
-		if (strncmp(value, "url(", 4) == 0 && attr->clipPathCount < NSVG_MAX_CLIP_PATHS) {
+		if (strncmp(value, "url(", 4) == 0 && attr->clipPathCount < TOVE_MAX_CLIP_PATHS) {
 			char clipName[64];
 			nsvg__parseUrl(clipName, value);
-			NSVGclipPath *clipPath = nsvg__findClipPath(p, clipName);
+			TOVEclipPath *clipPath = tove__findClipPath(p, clipName);
 			p->clipPathStack[attr->clipPathCount++] = clipPath->index;
 		}
 	} else if (strcmp(name, "stop-color") == 0) {
@@ -2834,7 +2790,7 @@ static void nsvg__startElement(void* ud, const char* el, const char** attr)
 		nsvg__pushAttr(p);
 		for (i = 0; attr[i]; i += 2) {
 			if (strcmp(attr[i], "id") == 0) {
-				p->clipPath = nsvg__findClipPath(p, attr[i+1]);
+				p->clipPath = tove__findClipPath(p, attr[i+1]);
 				break;
 			}
 		}
@@ -2945,7 +2901,7 @@ static void nsvg__transformShapes(NSVGshape* shapes, float tx, float ty, float s
 
 static void nsvg__scaleToViewbox(NSVGparser* p, const char* units)
 {
-	NSVGclipPath *clipPath;
+	TOVEclipPath *clipPath;
 	float tx, ty, sx, sy, us, bounds[4];
 
 	// Guess image size if not set completely.
@@ -3155,23 +3111,14 @@ void nsvg__deleteShapes(NSVGshape* shape)
 	}
 }
 
-void nsvg__deleteClipPaths(NSVGclipPath* path)
-{
-	NSVGclipPath *pnext;
-	while (path != NULL) {
-		pnext = path->next;
-		nsvg__deleteShapes(path->shapes);
-		free(path);
-		path = pnext;
-	}
-}
-
 void nsvgDelete(NSVGimage* image)
 {
 	if (image == NULL) return;
 	nsvg__deleteShapes(image->shapes);
-	nsvg__deleteClipPaths(image->clipPaths);
+	tove__deleteClipPaths(image->clipPaths);
 	free(image);
 }
+
+#include "../tove/svg.cpp"
 
 #endif

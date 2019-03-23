@@ -86,6 +86,8 @@ void nsvgDeleteRasterizer(NSVGrasterizer*);
 #define NSVG__FIXMASK		(NSVG__FIX-1)
 #define NSVG__MEMPAGE_SIZE	1024
 
+#include "../tove/svgrast.h"
+
 typedef struct NSVGedge {
 	float x0,y0, x1,y1;
 	int dir;
@@ -118,11 +120,8 @@ typedef struct NSVGcachedPaint {
 	char spread;
 	float xform[6];
 	unsigned int colors[256];
+	TOVEcachedPaint tove;
 } NSVGcachedPaint;
-
-typedef void (*NSVGscanlineFunction)(
-	unsigned char* dst, int count, unsigned char* cover, int x, int y,
-	float tx, float ty, float scale, NSVGcachedPaint* cache);
 
 struct NSVGrasterizer
 {
@@ -149,14 +148,14 @@ struct NSVGrasterizer
 
 	unsigned char* scanline;
 	int cscanline;
-	NSVGscanlineFunction fscanline;
-
-	unsigned char* stencil;
-	int stencilSize;
-	int stencilStride;
 
 	unsigned char* bitmap;
 	int width, height, stride;
+
+	unsigned int quality;
+
+	TOVEstencil stencil;
+	TOVEdither dither;
 };
 
 NSVGrasterizer* nsvgCreateRasterizer()
@@ -192,7 +191,8 @@ void nsvgDeleteRasterizer(NSVGrasterizer* r)
 	if (r->points) free(r->points);
 	if (r->points2) free(r->points2);
 	if (r->scanline) free(r->scanline);
-	if (r->stencil) free(r->stencil);
+
+	tove_deleteRasterizer(r);
 
 	free(r);
 }
@@ -996,149 +996,10 @@ static inline int nsvg__div255(int x)
     return ((x+1) * 257) >> 16;
 }
 
-static void nsvg__scanlineBit(
-	unsigned char* row, int count, unsigned char* cover, int x, int y,
-	float tx, float ty, float scale, NSVGcachedPaint* cache)
-{
-	int x1 = x + count;
-	for (; x < x1; x++) {
-		row[x / 8] |= 1 << (x % 8);
-	}
-}
-
-static void nsvg__scanlineSolid(
-	unsigned char* row, int count, unsigned char* cover, int x, int y,
-	float tx, float ty, float scale, NSVGcachedPaint* cache)
-{
-	unsigned char* dst = row + x*4;
-
-	if (cache->type == NSVG_PAINT_COLOR) {
-		int i, cr, cg, cb, ca;
-		cr = cache->colors[0] & 0xff;
-		cg = (cache->colors[0] >> 8) & 0xff;
-		cb = (cache->colors[0] >> 16) & 0xff;
-		ca = (cache->colors[0] >> 24) & 0xff;
-
-		for (i = 0; i < count; i++) {
-			int r,g,b;
-			int a = nsvg__div255((int)cover[0] * ca);
-			int ia = 255 - a;
-			// Premultiply
-			r = nsvg__div255(cr * a);
-			g = nsvg__div255(cg * a);
-			b = nsvg__div255(cb * a);
-
-			// Blend over
-			r += nsvg__div255(ia * (int)dst[0]);
-			g += nsvg__div255(ia * (int)dst[1]);
-			b += nsvg__div255(ia * (int)dst[2]);
-			a += nsvg__div255(ia * (int)dst[3]);
-
-			dst[0] = (unsigned char)r;
-			dst[1] = (unsigned char)g;
-			dst[2] = (unsigned char)b;
-			dst[3] = (unsigned char)a;
-
-			cover++;
-			dst += 4;
-		}
-	} else if (cache->type == NSVG_PAINT_LINEAR_GRADIENT) {
-		// TODO: spread modes.
-		// TODO: plenty of opportunities to optimize.
-		float fx, fy, dx, gy;
-		float* t = cache->xform;
-		int i, cr, cg, cb, ca;
-		unsigned int c;
-
-		fx = ((float)x - tx) / scale;
-		fy = ((float)y - ty) / scale;
-		dx = 1.0f / scale;
-
-		for (i = 0; i < count; i++) {
-			int r,g,b,a,ia;
-			gy = fx*t[1] + fy*t[3] + t[5];
-			c = cache->colors[(int)nsvg__clampf(gy*255.0f, 0, 255.0f)];
-			cr = (c) & 0xff;
-			cg = (c >> 8) & 0xff;
-			cb = (c >> 16) & 0xff;
-			ca = (c >> 24) & 0xff;
-
-			a = nsvg__div255((int)cover[0] * ca);
-			ia = 255 - a;
-
-			// Premultiply
-			r = nsvg__div255(cr * a);
-			g = nsvg__div255(cg * a);
-			b = nsvg__div255(cb * a);
-
-			// Blend over
-			r += nsvg__div255(ia * (int)dst[0]);
-			g += nsvg__div255(ia * (int)dst[1]);
-			b += nsvg__div255(ia * (int)dst[2]);
-			a += nsvg__div255(ia * (int)dst[3]);
-
-			dst[0] = (unsigned char)r;
-			dst[1] = (unsigned char)g;
-			dst[2] = (unsigned char)b;
-			dst[3] = (unsigned char)a;
-
-			cover++;
-			dst += 4;
-			fx += dx;
-		}
-	} else if (cache->type == NSVG_PAINT_RADIAL_GRADIENT) {
-		// TODO: spread modes.
-		// TODO: plenty of opportunities to optimize.
-		// TODO: focus (fx,fy)
-		float fx, fy, dx, gx, gy, gd;
-		float* t = cache->xform;
-		int i, cr, cg, cb, ca;
-		unsigned int c;
-
-		fx = ((float)x - tx) / scale;
-		fy = ((float)y - ty) / scale;
-		dx = 1.0f / scale;
-
-		for (i = 0; i < count; i++) {
-			int r,g,b,a,ia;
-			gx = fx*t[0] + fy*t[2] + t[4];
-			gy = fx*t[1] + fy*t[3] + t[5];
-			gd = sqrtf(gx*gx + gy*gy);
-			c = cache->colors[(int)nsvg__clampf(gd*255.0f, 0, 255.0f)];
-			cr = (c) & 0xff;
-			cg = (c >> 8) & 0xff;
-			cb = (c >> 16) & 0xff;
-			ca = (c >> 24) & 0xff;
-
-			a = nsvg__div255((int)cover[0] * ca);
-			ia = 255 - a;
-
-			// Premultiply
-			r = nsvg__div255(cr * a);
-			g = nsvg__div255(cg * a);
-			b = nsvg__div255(cb * a);
-
-			// Blend over
-			r += nsvg__div255(ia * (int)dst[0]);
-			g += nsvg__div255(ia * (int)dst[1]);
-			b += nsvg__div255(ia * (int)dst[2]);
-			a += nsvg__div255(ia * (int)dst[3]);
-
-			dst[0] = (unsigned char)r;
-			dst[1] = (unsigned char)g;
-			dst[2] = (unsigned char)b;
-			dst[3] = (unsigned char)a;
-
-			cover++;
-			dst += 4;
-			fx += dx;
-		}
-	}
-}
-
 static void nsvg__rasterizeSortedEdges(
 	NSVGrasterizer *r, float tx, float ty, float scale,
-	NSVGcachedPaint* cache, char fillRule, NSVGclip* clip)
+	NSVGcachedPaint* cache, char fillRule, TOVEclip* clip,
+	TOVEscanlineFunction scanline)
 {
 	NSVGactiveEdge *active = NULL;
 	int y, s;
@@ -1220,17 +1081,7 @@ static void nsvg__rasterizeSortedEdges(
 		if (xmin < 0) xmin = 0;
 		if (xmax > r->width-1) xmax = r->width-1;
 		if (xmin <= xmax) {
-			int i, j;
-			for (i = 0; i < clip->count; i++) {
-				unsigned char* stencil = &r->stencil[r->stencilSize * clip->index[i] + y * r->stencilStride];
-				for (j = xmin; j <= xmax; j++) {
-					if (((stencil[j / 8] >> (j % 8)) & 1) == 0) {
-						r->scanline[j] = 0;
-					}
-				}
-			}
-
-			r->fscanline(&r->bitmap[y * r->stride], xmax-xmin+1, &r->scanline[xmin], xmin, y, tx,ty, scale, cache);
+			scanline(r, xmin, y, xmax-xmin+1, tx,ty, scale, cache, clip);
 		}
 	}
 
@@ -1296,22 +1147,33 @@ static void nsvg__unpremultiplyAlpha(unsigned char* image, int w, int h, int str
 }
 
 
-static void nsvg__initPaint(NSVGcachedPaint* cache, NSVGpaint* paint, float opacity)
+static TOVEscanlineFunction nsvg__initPaint(NSVGcachedPaint* cache, NSVGpaint* paint, float opacity,
+	NSVGrasterizer* r, TOVEscanlineFunction scanline)
 {
 	int i, j;
 	NSVGgradient* grad;
+	bool initCacheColors;
+
+	if (scanline) {
+		return scanline;
+	}
 
 	cache->type = paint->type;
 
 	if (paint->type == NSVG_PAINT_COLOR) {
 		cache->colors[0] = nsvg__applyOpacity(paint->color, opacity);
-		return;
+		return tove__drawColorScanline;
 	}
 
 	grad = paint->gradient;
 
 	cache->spread = grad->spread;
 	memcpy(cache->xform, grad->xform, sizeof(float)*6);
+
+	scanline = tove__initPaint(cache, r, paint, opacity, initCacheColors);
+	if (!initCacheColors) {
+		return scanline;
+	}
 
 	if (grad->nstops == 0) {
 		for (i = 0; i < 256; i++)
@@ -1354,6 +1216,7 @@ static void nsvg__initPaint(NSVGcachedPaint* cache, NSVGpaint* paint, float opac
 			cache->colors[i] = cb;
 	}
 
+	return scanline;
 }
 
 /*
@@ -1402,18 +1265,18 @@ static void nsvg__rasterizeShapes(
 	NSVGrasterizer* r,
 	NSVGshape* shapes, float tx, float ty, float scale,
 	unsigned char* dst, int w, int h, int stride,
-	NSVGscanlineFunction fscanline)
+	TOVEscanlineFunction scanline)
 {
 	NSVGshape *shape = NULL;
 	NSVGedge *e = NULL;
 	NSVGcachedPaint cache;
+	TOVEscanlineFunction scanline2;
 	int i;
 
 	r->bitmap = dst;
 	r->width = w;
 	r->height = h;
 	r->stride = stride;
-	r->fscanline = fscanline;
 
 	if (w > r->cscanline) {
 		r->cscanline = w;
@@ -1445,9 +1308,9 @@ static void nsvg__rasterizeShapes(
 			qsort(r->edges, r->nedges, sizeof(NSVGedge), nsvg__cmpEdge);
 
 			// now, traverse the scanlines and find the intersections on each scanline, use non-zero rule
-			nsvg__initPaint(&cache, &shape->fill, shape->opacity);
+			scanline2 = nsvg__initPaint(&cache, &shape->fill, shape->opacity, r, scanline);
 
-			nsvg__rasterizeSortedEdges(r, tx,ty,scale, &cache, shape->fillRule, &shape->clip);
+			nsvg__rasterizeSortedEdges(r, tx,ty,scale, &cache, shape->fillRule, &shape->clip, scanline2);
 		}
 		if (shape->stroke.type != NSVG_PAINT_NONE && (shape->strokeWidth * scale) > 0.01f) {
 			nsvg__resetPool(r);
@@ -1471,9 +1334,9 @@ static void nsvg__rasterizeShapes(
 			qsort(r->edges, r->nedges, sizeof(NSVGedge), nsvg__cmpEdge);
 
 			// now, traverse the scanlines and find the intersections on each scanline, use non-zero rule
-			nsvg__initPaint(&cache, &shape->stroke, shape->opacity);
+			scanline2 = nsvg__initPaint(&cache, &shape->stroke, shape->opacity, r, scanline);
 
-			nsvg__rasterizeSortedEdges(r, tx,ty,scale, &cache, NSVG_FILLRULE_NONZERO, &shape->clip);
+			nsvg__rasterizeSortedEdges(r, tx,ty,scale, &cache, NSVG_FILLRULE_NONZERO, &shape->clip, scanline2);
 		}
 	}
 
@@ -1481,41 +1344,6 @@ static void nsvg__rasterizeShapes(
 	r->width = 0;
 	r->height = 0;
 	r->stride = 0;
-	r->fscanline = NULL;
-}
-
-void nsvg__rasterizeClipPaths(
-	NSVGrasterizer* r, NSVGimage* image, int w, int h,
-	float tx, float ty, float scale)
-{
-	NSVGclipPath* clipPath;
-	int clipPathCount = 0;
-
-	clipPath = image->clipPaths;
-	if (clipPath == NULL) {
-		r->stencil = NULL;
-		return;
-	}
-
-	while (clipPath != NULL) {
-		clipPathCount++;
-		clipPath = clipPath->next;
-	}
-
-	r->stencilStride = w / 8 + (w % 8 != 0 ? 1 : 0);
-	r->stencilSize = h * r->stencilStride;
-	r->stencil = (unsigned char*)realloc(
-		r->stencil, r->stencilSize * clipPathCount);
-	if (r->stencil == NULL) return;
-	memset(r->stencil, 0, r->stencilSize * clipPathCount);
-
-	clipPath = image->clipPaths;
-	while (clipPath != NULL) {
-		nsvg__rasterizeShapes(r, clipPath->shapes, tx, ty, scale,
-			&r->stencil[r->stencilSize * clipPath->index],
-			w, h, r->stencilStride, nsvg__scanlineBit);
-		clipPath = clipPath->next;
-	}
 }
 
 void nsvgRasterize(
@@ -1528,12 +1356,16 @@ void nsvgRasterize(
 	for (i = 0; i < h; i++)
 		memset(&dst[i*stride], 0, w*4);
 
-	nsvg__rasterizeClipPaths(r, image, w, h, tx, ty, scale);
+	if (!tove__rasterize(r, image, w, h, tx, ty, scale)) {
+		return;
+	}
 
 	nsvg__rasterizeShapes(r, image->shapes, tx, ty, scale,
-		dst, w, h, stride, nsvg__scanlineSolid);
+		dst, w, h, stride,  NULL);
 
 	nsvg__unpremultiplyAlpha(dst, w, h, stride);
 }
+
+#include "../tove/svgrast.cpp"
 
 #endif
