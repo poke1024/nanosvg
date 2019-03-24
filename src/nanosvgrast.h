@@ -152,8 +152,7 @@ struct NSVGrasterizer
 	unsigned char* bitmap;
 	int width, height, stride;
 
-	unsigned int quality;
-
+	TOVErasterizerQuality quality;
 	TOVEstencil stencil;
 	TOVEdither dither;
 };
@@ -1162,7 +1161,7 @@ static TOVEscanlineFunction nsvg__initPaint(NSVGcachedPaint* cache, NSVGpaint* p
 
 	if (paint->type == NSVG_PAINT_COLOR) {
 		cache->colors[0] = nsvg__applyOpacity(paint->color, opacity);
-		return tove__drawColorScanline;
+		return tove__initPaint(cache, r, paint, opacity, initCacheColors);
 	}
 
 	grad = paint->gradient;

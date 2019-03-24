@@ -32,6 +32,14 @@ struct TOVEcachedPaint {
 	int32_t ditherSpan[2];
 };
 
+struct TOVErasterizerQuality {
+	uint8_t flags;
+	struct {
+		uint16_t size;
+		const uint8_t *colors;
+	} palette;
+};
+
 typedef void (*TOVEscanlineFunction)(
 	NSVGrasterizer *rasterizer,
 	int x,
@@ -60,14 +68,3 @@ bool tove__rasterize(
 	float tx,
     float ty,
     float scale);
-
-void tove__drawColorScanline(
-	NSVGrasterizer* r,
-	int xmin,
-	int y,
-	int count,
-	float tx,
-	float ty,
-	float scale,
-	NSVGcachedPaint* cache,
-	TOVEclip* clip);
