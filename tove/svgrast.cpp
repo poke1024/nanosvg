@@ -154,7 +154,7 @@ class BestGradientColors {
 	
 	static constexpr int diffusion_matrix_width = 5;
 	static constexpr int diffusion_matrix_height = 3;
-	static constexpr int dither_components = 3;
+	static constexpr int dither_components = 4;
 
 	dither_error_t *diffusion[diffusion_matrix_height];
 
@@ -293,6 +293,7 @@ public:
 		const int cr1 = (c1) & 0xff;
 		const int cg1 = (c1 >> 8) & 0xff;
 		const int cb1 = (c1 >> 16) & 0xff;
+		const int ca1 = (c1 >> 24) & 0xff;
 
 		const float offset0 = stop->tove.offset;
 		const float range = (stop + 1)->tove.offset - offset0;
@@ -302,20 +303,21 @@ public:
 		const float f_cr = (cr0 * s + cr1 * t) + r0[x * dither_components + 0];
 		const float f_cg = (cg0 * s + cg1 * t) + r0[x * dither_components + 1];
 		const float f_cb = (cb0 * s + cb1 * t) + r0[x * dither_components + 2];
+		const float f_ca = (ca0 * s + ca1 * t) + r0[x * dither_components + 3];
 
 		const int cr = nsvg__clampf(f_cr + 0.5, 0.0f, 255.0f);
 		const int cg = nsvg__clampf(f_cg + 0.5, 0.0f, 255.0f);
 		const int cb = nsvg__clampf(f_cb + 0.5, 0.0f, 255.0f);
-		const int ca = ca0;
+		const int ca = nsvg__clampf(f_ca + 0.5, 0.0f, 255.0f);
 
 		// future feature:
 		// apply restricted paletted on (cr, cg, cb) here.
 
-		const float errors[] = {f_cr - cr, f_cg - cg, f_cb - cb};
+		const float errors[] = {f_cr - cr, f_cg - cg, f_cb - cb, f_ca - ca};
 
 		// Distribute errors using sierra dithering.
 		#pragma clang loop vectorize(enable)
-		for (int j = 0; j < 3; j++) {
+		for (int j = 0; j < 4; j++) {
 			const int offset = x * dither_components + j;
 			const float error = errors[j];
 
