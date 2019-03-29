@@ -696,7 +696,7 @@ bool tove__rasterize(
 	TOVEclipPath* clipPath;
 	int clipPathCount = 0;
 
-	clipPath = image->clipPaths;
+	clipPath = image->clip.instances;
 	if (clipPath == NULL) {
 		return true;
 	}
@@ -715,7 +715,7 @@ bool tove__rasterize(
 	}
 	memset(r->stencil.data, 0, r->stencil.size * clipPathCount);
 
-	clipPath = image->clipPaths;
+	clipPath = image->clip.instances;
 	while (clipPath != NULL) {
 		nsvg__rasterizeShapes(r, clipPath->shapes, tx, ty, scale,
 			&r->stencil.data[r->stencil.size * clipPath->index],

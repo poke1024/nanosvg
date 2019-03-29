@@ -171,7 +171,7 @@ typedef struct NSVGimage
 	float width;				// Width of the image.
 	float height;				// Height of the image.
 	NSVGshape* shapes;			// Linked list of shapes in the image.
-	TOVEclipPath* clipPaths;	// Linked list of clip paths in the image.
+	TOVEimageClip clip;			// Clip path information.
 } NSVGimage;
 
 typedef int (*NSVGparseXML)(char* input,
@@ -479,7 +479,7 @@ typedef struct NSVGparser
 	float dpi;
 	char pathFlag;
 	char defsFlag;
-	TOVEclipPath* clipPath;
+	TOVEclipPathDefinition* clipPath;
 	TOVEclipPathIndex clipPathStack[TOVE_MAX_CLIP_PATHS];
 } NSVGparser;
 
@@ -1833,8 +1833,10 @@ static int nsvg__parseAttr(NSVGparser* p, const char* name, const char* value)
 		if (strncmp(value, "url(", 4) == 0 && attr->clipPathCount < TOVE_MAX_CLIP_PATHS) {
 			char clipName[64];
 			nsvg__parseUrl(clipName, value);
-			TOVEclipPath *clipPath = tove__findClipPath(p, clipName);
-			p->clipPathStack[attr->clipPathCount++] = clipPath->index;
+			int index = tove__findClipPath(p, clipName, attr->xform);
+			if (index >= 0) {
+				p->clipPathStack[attr->clipPathCount++] = index;
+			}
 		}
 	} else if (strcmp(name, "stop-color") == 0) {
 		attr->stopColor = nsvg__parseColor(value);
@@ -2790,7 +2792,7 @@ static void nsvg__startElement(void* ud, const char* el, const char** attr)
 		nsvg__pushAttr(p);
 		for (i = 0; attr[i]; i += 2) {
 			if (strcmp(attr[i], "id") == 0) {
-				p->clipPath = tove__findClipPath(p, attr[i+1]);
+				p->clipPath = tove__addClipPathDefinition(p, attr[i+1]);
 				break;
 			}
 		}
@@ -2808,16 +2810,7 @@ static void nsvg__endElement(void* ud, const char* el)
 	} else if (strcmp(el, "defs") == 0) {
 		p->defsFlag = 0;
 	} else if (strcmp(el, "clipPath") == 0) {
-		if (p->clipPath != NULL) {
-			NSVGshape* shape = p->clipPath->shapes;
-			while (shape != NULL) {
-				shape->fill.type = NSVG_PAINT_COLOR;
-				shape->stroke.type = NSVG_PAINT_NONE;
-				shape = shape->next;
-			}
-			p->clipPath = NULL;
-		}
-
+		p->clipPath = NULL;
 		nsvg__popAttr(p);
 	}
 }
@@ -2953,7 +2946,7 @@ static void nsvg__scaleToViewbox(NSVGparser* p, const char* units)
 	sy *= us;
 	nsvg__transformShapes(p->image->shapes, tx, ty, sx, sy);
 
-	clipPath = p->image->clipPaths;
+	clipPath = p->image->clip.instances;
 	while (clipPath != NULL) {
 		nsvg__transformShapes(clipPath->shapes, tx, ty, sx, sy);
 		clipPath = clipPath->next;
@@ -3018,6 +3011,8 @@ NSVGimage* nsvgParseEx(char* input, const char* units, float dpi, NSVGparseXML p
 	parse(input, nsvg__startElement, nsvg__endElement, nsvg__content, p);
 
 	nsvg__assignGradients(p);
+
+	tove__finishParse(p);
 
 	// Scale to viewBox
 	nsvg__scaleToViewbox(p, units);
@@ -3115,7 +3110,7 @@ void nsvgDelete(NSVGimage* image)
 {
 	if (image == NULL) return;
 	nsvg__deleteShapes(image->shapes);
-	tove__deleteClipPaths(image->clipPaths);
+	tove__deleteClipPaths(&image->clip);
 	free(image);
 }
 
