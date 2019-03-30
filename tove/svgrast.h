@@ -34,6 +34,7 @@ struct TOVEcachedPaint {
 
 struct TOVErasterizerQuality {
 	uint8_t flags;
+	float noise;
 	struct {
 		uint16_t size;
 		const uint8_t *colors;

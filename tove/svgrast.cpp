@@ -130,6 +130,7 @@ public:
 		int r0, int g0, int b0, int a0,
 		int &r, int &g, int &b, int& a,
 		const int x,
+		const int direction,
 		const Palette &palette) {
 
 		r = r0;
@@ -141,6 +142,7 @@ public:
 	}
 };
 
+
 class SierraDithering {
 public:
 	typedef float dither_error_t;
@@ -151,6 +153,18 @@ public:
 
 protected:
 	dither_error_t *diffusion[diffusion_matrix_height];
+	uint64_t s[2];
+	const float noise;
+
+	inline uint64_t xorshift128plus() {
+		// see https://de.wikipedia.org/wiki/Xorshift
+		uint64_t x = s[0];
+		uint64_t const y = s[1];
+		s[0] = y;
+		x ^= x << 23; // a
+		s[1] = x ^ y ^ (x >> 17) ^ (y >> 26); // b, c
+		return s[1] + y;
+	}
 
 	inline void rotate(
 		const NSVGrasterizer* r,
@@ -276,9 +290,12 @@ public:
 		NSVGcachedPaint *cache,
 		int x,
 		int y,
-		int count) {
+		int count) : noise(r->quality.noise) {
 
 		rotate(r, cache, x, y, count);
+
+		s[0] = y;
+		s[1] = x;
 	}
 
 	template<typename Palette>
@@ -286,6 +303,7 @@ public:
 		int r0, int g0, int b0, int a0,
 		int &r, int &g, int &b, int& a,
 		const int x,
+		const int direction,
 		const Palette &palette) {
 
 		const uint32_t color = (*this)(
@@ -294,6 +312,7 @@ public:
 			b0,
 			a0,
 			x,
+			direction,
 			palette);
 		
 		r = color & 0xff;
@@ -306,6 +325,7 @@ public:
 	inline uint32_t operator()(
 		float r, float g, float b, float a,
 		const int x,
+		const int direction,
 		const Palette &palette) {
 		
 		dither_error_t * const r0 = diffusion[0];
@@ -324,7 +344,15 @@ public:
 
 		palette(cr, cg, cb);
 
-		const float errors[] = {f_cr - cr, f_cg - cg, f_cb - cb, f_ca - ca};
+		const uint64_t random = xorshift128plus();
+		const float bias = noise * (int((random >> 10) & 0xff) * ((random & 20) ? 1 : -1));
+
+		const float errors[] = {
+			f_cr - cr + bias,
+			f_cg - cg + bias,
+			f_cb - cb + bias,
+			f_ca - ca + bias};
+		const int dx = direction * dither_components;
 
 		// distribute errors using sierra dithering.
 		#pragma clang loop vectorize(enable)
@@ -332,18 +360,18 @@ public:
 			const int offset = x * dither_components + j;
 			const float error = errors[j];
 
-			r0[offset + 1 * dither_components] += error * (5.0f / 32.0f);
-			r0[offset + 2 * dither_components] += error * (3.0f / 32.0f);
+			r0[offset + 1 * dx] += error * (5.0f / 32.0f);
+			r0[offset + 2 * dx] += error * (3.0f / 32.0f);
 
-			r1[offset - 2 * dither_components] += error * (2.0f / 32.0f);
-			r1[offset - 1 * dither_components] += error * (4.0f / 32.0f);
-			r1[offset + 0 * dither_components] += error * (5.0f / 32.0f);
-			r1[offset + 1 * dither_components] += error * (4.0f / 32.0f);
-			r1[offset + 2 * dither_components] += error * (2.0f / 32.0f);
+			r1[offset - 2 * dx] += error * (2.0f / 32.0f);
+			r1[offset - 1 * dx] += error * (4.0f / 32.0f);
+			r1[offset + 0 * dx] += error * (5.0f / 32.0f);
+			r1[offset + 1 * dx] += error * (4.0f / 32.0f);
+			r1[offset + 2 * dx] += error * (2.0f / 32.0f);
 
-			r2[offset - 1 * dither_components] += error * (2.0f / 32.0f);
-			r2[offset + 0 * dither_components] += error * (3.0f / 32.0f);
-			r2[offset + 1 * dither_components] += error * (2.0f / 32.0f);
+			r2[offset - 1 * dx] += error * (2.0f / 32.0f);
+			r2[offset + 0 * dx] += error * (3.0f / 32.0f);
+			r2[offset + 1 * dx] += error * (2.0f / 32.0f);
 		}
 
 		/*cr = 128 + 0.5 * nsvg__clampf(errors[0],-255, 255);
@@ -398,7 +426,7 @@ public:
 		return true;
 	}
 
-	inline uint32_t operator()(int x, float gy) const {
+	inline uint32_t operator()(int x, int d, float gy) const {
 		return cache->colors[(int)nsvg__clampf(gy*255.0f, 0, 255.0f)];
 	}
 };
@@ -452,7 +480,7 @@ public:
 		return stop + 1 < stopN;
 	}
 
-	inline uint32_t operator()(const int x, const float gy) {
+	inline uint32_t operator()(const int x, const int direction, const float gy) {
 		while (gy >= (stop + 1)->tove.offset && (stop + 2) < stopN) {
 			stop++;
 		}
@@ -483,6 +511,7 @@ public:
 			cb0 * s + cb1 * t,
 			ca0 * s + ca1 * t,
 			x,
+			direction,
 			palette);
 	}
 };
@@ -519,22 +548,21 @@ void drawGradientScanline(
 	dx = 1.0f / scale;
 
 	// use serpentine scanning for better dithering.
-	int i0, id;
-	if (y & 1) {
+	const int idir = (y & 1) ? 1 : -1;
+	int i0;
+	if (idir > 0) {
 		i0 = 0;
-		id = 1;
 	} else {
 		fx += (count - 1) * dx;
 		dx = -dx;
 		i0 = count - 1;
-		id = -1;
 	}
 
 	for (int k = 0; k < count; k++) {
-		const int i = i0 + k * id;
+		const int i = i0 + k * idir;
 
 		int r,g,b,a,ia;
-		c = colors(x + i, gradient(fx, fy));
+		c = colors(x + i, idir, gradient(fx, fy));
 		cr = (c) & 0xff;
 		cg = (c >> 8) & 0xff;
 		cb = (c >> 16) & 0xff;
@@ -595,6 +623,7 @@ inline void drawColorScanline(
 			cr0, cg0, cb0, ca0,
 			cr, cg, cb, ca,
 			xmin + i,
+			1,
 			palette);
 
 		int r,g,b;
