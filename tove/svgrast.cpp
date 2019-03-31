@@ -166,6 +166,15 @@ protected:
 		return s[1] + y;
 	}
 
+	inline float randomBias() {
+		if (noise > 0.0f) {
+			const uint64_t random = xorshift128plus();
+			return noise * (int((random >> 10) & 0xff) * ((random & 20) ? 1 : -1));
+		} else {
+			return 0.0f;
+		}
+	}
+
 	inline void rotate(
 		const NSVGrasterizer* r,
 		NSVGcachedPaint* cache,
@@ -294,8 +303,15 @@ public:
 
 		rotate(r, cache, x, y, count);
 
-		s[0] = y;
-		s[1] = x;
+		if (noise > 0.0f) {
+			s[0] = y ^ 0xcbf29ce484222325;
+			s[1] = x;
+
+			// get really random first.
+			for (int i = 0; i < 10; i++) {
+				xorshift128plus();
+			}
+		}
 	}
 
 	template<typename Palette>
@@ -344,9 +360,7 @@ public:
 
 		palette(cr, cg, cb);
 
-		const uint64_t random = xorshift128plus();
-		const float bias = noise * (int((random >> 10) & 0xff) * ((random & 20) ? 1 : -1));
-
+		const float bias = randomBias();
 		const float errors[] = {
 			f_cr - cr + bias,
 			f_cg - cg + bias,
