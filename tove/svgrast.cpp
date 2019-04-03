@@ -78,37 +78,14 @@ public:
 	}
 
 	inline void operator()(int &cr, int &cg, int &cb) const {
-		/*cr = ((cr + 16) >> 5) << 5;
-		cg = ((cg + 16) >> 5) << 5;
-		cb = ((cb + 16) >> 5) << 5;
-		return;*/
+		uint32_t c = tove::Palette::deref(quality->palette)->closest(
+			cr,
+			cg,
+			cb);
 
-		const int n = quality->palette.size;
-		const uint8_t *p = quality->palette.colors;
-
-		long best_d = std::numeric_limits<long>::max();
-		const uint8_t *best_p = p;
-
-		const int r0 = cr;
-		const int g0 = cg;
-		const int b0 = cb;
-
-		// brute force search. fast enough for small sets.
-		for (int i = 0; i < n; i++, p += 3) {
-			const long dr = r0 - p[0];
-			const long dg = g0 - p[1];
-			const long db = b0 - p[2];
-
-			const long d = dr * dr + dg * dg + db * db;
-			if (d < best_d) {
-				best_d = d;
-				best_p = p;
-			}
-		}
-
-		cr = best_p[0];
-		cg = best_p[1];
-		cb = best_p[2];
+		cr = (c >> 0) & 0xff;
+		cg = (c >> 8) & 0xff;
+		cb = (c >> 16) & 0xff;
 	}
 };
 
@@ -543,7 +520,7 @@ void drawGradientScanline(
 	NSVGcachedPaint* cache,
 	TOVEclip* clip) {
 
-	using tove::nsvg__div255;
+	using ::tove::nsvg__div255;
 
 	unsigned char* dst0 = &r->bitmap[y * r->stride] + x*4;
 	unsigned char* cover0 = &r->scanline[x];
@@ -675,7 +652,7 @@ TOVEscanlineFunction tove__initPaint(
 		switch (cache->type) {
 			case NSVG_PAINT_COLOR:
 				initCacheColors = true;
-				if (r->quality.palette.colors) {
+				if (r->quality.palette) {
 					return drawColorScanline<SierraDithering, RestrictedPalette>;
 				} else {
 					return drawColorScanline<NoDithering, UnrestrictedPalette>;
@@ -684,7 +661,7 @@ TOVEscanlineFunction tove__initPaint(
 			case NSVG_PAINT_LINEAR_GRADIENT:
 				BestGradientColors<SierraDithering, AnyPalette>::init(cache, paint, opacity);
 				initCacheColors = false;
-				if (r->quality.palette.colors) {
+				if (r->quality.palette) {
 					return drawGradientScanline<
 						LinearGradient,
 						BestGradientColors<SierraDithering, RestrictedPalette>>;
@@ -697,7 +674,7 @@ TOVEscanlineFunction tove__initPaint(
 			case NSVG_PAINT_RADIAL_GRADIENT:
 				BestGradientColors<SierraDithering, AnyPalette>::init(cache, paint, opacity);
 				initCacheColors = false;
-				if (r->quality.palette.colors) {
+				if (r->quality.palette) {
 					return drawGradientScanline<
 						RadialGradient,
 						BestGradientColors<SierraDithering, RestrictedPalette>>;
