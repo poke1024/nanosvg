@@ -22,8 +22,9 @@ struct TOVEstencil {
 };
 
 struct TOVEdither {
-    void* data;
+    void *data;
 	uint32_t stride;
+	void **rows;
 };
 
 struct TOVEcachedPaint {
@@ -32,8 +33,20 @@ struct TOVEcachedPaint {
 	int32_t ditherSpan[2];
 };
 
+enum TOVEdithering {
+	none,
+	diffusion,
+	ordered
+};
+
 struct TOVErasterizerQuality {
-	uint8_t flags;
+	struct {
+		TOVEdithering type;
+		const float *matrix;
+		int16_t matrix_width;
+		int16_t matrix_height;
+		float spread;
+	} dither;
 	float noise;
 	void *palette;
 };

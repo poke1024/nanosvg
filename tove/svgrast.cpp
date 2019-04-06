@@ -8,6 +8,16 @@
  * All rights reserved.
  */
 
+inline uint8_t int16_to_uint8(int16_t x) {
+	if (x <= 0) {
+		return 0;
+	} else if (x >= 0xff) {
+		return 0xff;
+	} else {
+		return uint8_t(x);
+	}
+}
+
 void tove_deleteRasterizer(NSVGrasterizer* r) {
 
 	if (r->stencil.data) free(r->stencil.data);
@@ -63,7 +73,8 @@ public:
 		const NSVGrasterizer *r) {
 	}
 
-	inline void operator()(int &cr, int &cg, int &cb) const {
+	inline RGBA operator()(uint8_t cr, uint8_t cg, uint8_t cb, uint8_t ca) const {
+		return RGBA{cr, cg, cb, ca};
 	}
 };
 
@@ -77,19 +88,17 @@ public:
 		quality(&r->quality) {
 	}
 
-	inline void operator()(int &cr, int &cg, int &cb) const {
-		uint32_t c = tove::Palette::deref(quality->palette)->closest(
+	inline RGBA operator()(uint8_t cr, uint8_t cg, uint8_t cb, uint8_t ca) const {
+		return tove::Palette::deref(quality->palette)->closest(
 			cr,
 			cg,
-			cb);
-
-		cr = (c >> 0) & 0xff;
-		cg = (c >> 8) & 0xff;
-		cb = (c >> 16) & 0xff;
+			cb,
+			ca);
 	}
 };
 
 typedef UnrestrictedPalette AnyPalette;
+
 
 
 class NoDithering {
@@ -99,51 +108,48 @@ public:
 		NSVGcachedPaint *cache,
 		int x,
 		int y,
+		int direction,
 		int count) {
 	}
 
-	template<typename Palette>
-	inline void operator()(
-		int r0, int g0, int b0, int a0,
-		int &r, int &g, int &b, int& a,
+	template<typename Palette, typename T>
+	inline RGBA operator()(
+		T r, T g, T b, T a,
 		const int x,
-		const int direction,
-		const Palette &palette) {
+		const Palette &palette) const {
 
-		r = r0;
-		g = g0;
-		b = b0;
-		a = a0;
-
-		palette(r, g, b);
+		return palette(r, g, b, a);
 	}
 };
 
-
-class SierraDithering {
-public:
-	typedef float dither_error_t;
-	
-	static constexpr int diffusion_matrix_half_w = 2;
-	static constexpr int diffusion_matrix_height = 3;
-	static constexpr int dither_components = 4;
-
-protected:
-	dither_error_t *diffusion[diffusion_matrix_height];
-	uint64_t s[2];
+class Noise {
 	const float noise;
+	uint64_t s[2];
 
 	inline uint64_t xorshift128plus() {
 		// see https://de.wikipedia.org/wiki/Xorshift
 		uint64_t x = s[0];
-		uint64_t const y = s[1];
+		const uint64_t y = s[1];
 		s[0] = y;
 		x ^= x << 23; // a
 		s[1] = x ^ y ^ (x >> 17) ^ (y >> 26); // b, c
 		return s[1] + y;
 	}
 
-	inline float randomBias() {
+public:
+	inline Noise(float noise, int x, int y) : noise(noise) {
+		if (noise > 0.0f) {
+			s[0] = y ^ 0x868e9b74cf54a3a8;
+			s[1] = x ^ 0x4a9f72f594298821;
+
+			// get really random first.
+			for (int i = 0; i < 10; i++) {
+				xorshift128plus();
+			}
+		}
+	}
+
+	inline float operator()() {
 		if (noise > 0.0f) {
 			const uint64_t random = xorshift128plus();
 			return noise * (int((random >> 10) & 0xff) * ((random & 20) ? 1 : -1));
@@ -151,6 +157,62 @@ protected:
 			return 0.0f;
 		}
 	}
+};
+
+class OrderedDithering {
+	const float *current_row;
+	const int16_t matrix_width;
+	const float spread;
+	Noise noise;
+
+public:
+	inline OrderedDithering(
+		NSVGrasterizer *r,
+		NSVGcachedPaint *cache,
+		int x,
+		int y,
+		int direction,
+		int count) :
+		
+		current_row(r->quality.dither.matrix +
+			(y % r->quality.dither.matrix_height) *
+				r->quality.dither.matrix_width),
+		matrix_width(r->quality.dither.matrix_width),
+		spread(r->quality.dither.spread),
+		noise(r->quality.noise, x, y) {
+	}
+
+	template<typename Palette, typename T>
+	inline RGBA operator()(
+		T f_cr, T f_cg, T f_cb, T f_ca,
+		const int x,
+		const Palette &palette) {
+
+		const float d = spread * current_row[x % matrix_width] + noise();
+		
+		return palette(
+			int16_to_uint8(int16_t(f_cr + d)),
+			int16_to_uint8(int16_t(f_cg + d)),
+			int16_to_uint8(int16_t(f_cb + d)),
+			f_ca);
+	}
+};
+
+class DiffusionDithering {
+public:
+	typedef float dither_error_t;
+	
+	const float *weight_matrix;
+	const int16_t weight_matrix_half_w;
+	const int16_t weight_matrix_height;
+
+	static constexpr int dither_components = 4;
+
+	dither_error_t **diffusion_matrix;
+	Noise noise;
+
+	const int8_t direction;
+	const float spread;
 
 	inline void rotate(
 		const NSVGrasterizer* r,
@@ -159,39 +221,39 @@ protected:
 		const int y,
 		const int count) {
 
-		dither_error_t **rows = diffusion;
+		dither_error_t **rows = diffusion_matrix;
 		dither_error_t * const data = static_cast<dither_error_t*>(r->dither.data);
 
 		const unsigned int stride = r->dither.stride;
 
 		int roll = y - cache->tove.ditherY;
 		if (roll < 0) { // should never happen.
-			roll = diffusion_matrix_height;
-		} else if (roll > diffusion_matrix_height) {
-			roll = diffusion_matrix_height;
+			roll = weight_matrix_height;
+		} else if (roll > weight_matrix_height) {
+			roll = weight_matrix_height;
 		}
 
 		cache->tove.ditherY = y;
 
 		// rotate rows.
-		for (int i = 0; i < diffusion_matrix_height; i++) {
-			rows[i] = &data[((y + i) % diffusion_matrix_height) * stride +
-				diffusion_matrix_half_w * dither_components];
+		for (int i = 0; i < weight_matrix_height; i++) {
+			rows[i] = &data[((y + i) % weight_matrix_height) * stride +
+				weight_matrix_half_w * dither_components];
 		}
 
-		const int span0 = (x - diffusion_matrix_half_w) * dither_components;
-		const int span1 = (x + count + diffusion_matrix_half_w) * dither_components;
+		const int span0 = (x - weight_matrix_half_w) * dither_components;
+		const int span1 = (x + count + weight_matrix_half_w) * dither_components;
 
 		// new rows.
 		for (int i = 0; i < roll; i++) {
-			dither_error_t * const row = rows[diffusion_matrix_height - 1 - i];
+			dither_error_t * const row = rows[weight_matrix_height - 1 - i];
 			for (int j = span0; j < span1; j++) {
 				row[j] = 0.0f;
 			}
 		}
 
 		// old rows that already have content.
-		for (int i = 0; i < diffusion_matrix_height - roll; i++) {
+		for (int i = 0; i < weight_matrix_height - roll; i++) {
 			dither_error_t * const row = rows[i];
 
 			const int previousLeftSpan = cache->tove.ditherSpan[0];
@@ -256,88 +318,63 @@ protected:
 
 public:
 	static inline bool enabled(const NSVGrasterizer* r) {
-		return r->quality.flags > 0;
+		return r->quality.dither.type == diffusion;
 	}
 
 	static inline bool allocate(NSVGrasterizer* r, int w) {
 		if (enabled(r)) {
 			TOVEdither &dither = r->dither;
-			dither.stride = (w + 2 * diffusion_matrix_half_w) * dither_components;
-			dither.data = (dither_error_t*)realloc(dither.data,
-				dither.stride * diffusion_matrix_height * sizeof(dither_error_t));
-			return dither.data != nullptr;
+			dither.stride = (w + r->quality.dither.matrix_width) * dither_components;
+			dither.data = (dither_error_t*)realloc(
+				dither.data,
+				dither.stride * r->quality.dither.matrix_height * sizeof(dither_error_t));
+			dither.rows = (void**)realloc(
+				dither.rows, r->quality.dither.matrix_height * sizeof(void*));
+			return dither.data != nullptr && dither.rows != nullptr;
 		} else {
 			return true;
 		}
 	}
 
-	inline SierraDithering(
+	inline DiffusionDithering(
 		NSVGrasterizer* r,
 		NSVGcachedPaint *cache,
 		int x,
 		int y,
-		int count) : noise(r->quality.noise) {
+		int direction,
+		int count) :
+		
+		weight_matrix(r->quality.dither.matrix),
+		weight_matrix_half_w((r->quality.dither.matrix_width - 1) / 2),
+		weight_matrix_height(r->quality.dither.matrix_height),
+		diffusion_matrix(reinterpret_cast<dither_error_t**>(r->dither.rows)),
+		noise(r->quality.noise, x, y),
+		spread(r->quality.dither.spread),
+		direction(direction) {
 
 		rotate(r, cache, x, y, count);
-
-		if (noise > 0.0f) {
-			s[0] = y ^ 0xcbf29ce484222325;
-			s[1] = x;
-
-			// get really random first.
-			for (int i = 0; i < 10; i++) {
-				xorshift128plus();
-			}
-		}
 	}
 
 	template<typename Palette>
-	inline void operator()(
-		int r0, int g0, int b0, int a0,
-		int &r, int &g, int &b, int& a,
-		const int x,
-		const int direction,
-		const Palette &palette) {
-
-		const uint32_t color = (*this)(
-			r0,
-			g0,
-			b0,
-			a0,
-			x,
-			direction,
-			palette);
-		
-		r = color & 0xff;
-		g = (color >> 8) & 0xff;
-		b = (color >> 16) & 0xff;
-		a = (color >> 24) & 0xff;
-	}
-
-	template<typename Palette>
-	inline uint32_t operator()(
+	inline RGBA operator()(
 		float r, float g, float b, float a,
 		const int x,
-		const int direction,
 		const Palette &palette) {
 		
-		dither_error_t * const r0 = diffusion[0];
-		dither_error_t * const r1 = diffusion[1];
-		dither_error_t * const r2 = diffusion[2];
+		dither_error_t * const r0 = diffusion_matrix[0];
 
-		const float f_cr = nsvg__clampf(r + r0[x * dither_components + 0], 0.0f, 255.0f);
-		const float f_cg = nsvg__clampf(g + r0[x * dither_components + 1], 0.0f, 255.0f);
-		const float f_cb = nsvg__clampf(b + r0[x * dither_components + 2], 0.0f, 255.0f);
-		const float f_ca = nsvg__clampf(a + r0[x * dither_components + 3], 0.0f, 255.0f);
+		const float f_cr = nsvg__clampf(r + r0[x * dither_components + 0] * spread, 0.0f, 255.0f);
+		const float f_cg = nsvg__clampf(g + r0[x * dither_components + 1] * spread, 0.0f, 255.0f);
+		const float f_cb = nsvg__clampf(b + r0[x * dither_components + 2] * spread, 0.0f, 255.0f);
+		const float f_ca = nsvg__clampf(a + r0[x * dither_components + 3] * spread, 0.0f, 255.0f);
 
-		int cr = f_cr + 0.5f;
-		int cg = f_cg + 0.5f;
-		int cb = f_cb + 0.5f;
-		const int ca = f_ca + 0.5f;
+		RGBA rgba = palette(f_cr + 0.5f, f_cg + 0.5f, f_cb + 0.5f, f_ca + 0.5f);
+		const uint8_t cr = rgba.r;
+		const uint8_t cg = rgba.g;
+		const uint8_t cb = rgba.b;
+		const uint8_t ca = rgba.a;
 
-		palette(cr, cg, cb);
-
-		const float bias = randomBias();
+		const float bias = noise();
 		const float errors[] = {
 			f_cr - cr + bias,
 			f_cg - cg + bias,
@@ -351,25 +388,20 @@ public:
 			const int offset = x * dither_components + j;
 			const float error = errors[j];
 
-			r0[offset + 1 * dx] += error * (5.0f / 32.0f);
-			r0[offset + 2 * dx] += error * (3.0f / 32.0f);
+			const float *w = weight_matrix + weight_matrix_half_w + 1;
+			for (int mx = 1; mx <= weight_matrix_half_w; mx++) {
+				r0[offset + mx * dx] += error * *w++;
+			}
 
-			r1[offset - 2 * dx] += error * (2.0f / 32.0f);
-			r1[offset - 1 * dx] += error * (4.0f / 32.0f);
-			r1[offset + 0 * dx] += error * (5.0f / 32.0f);
-			r1[offset + 1 * dx] += error * (4.0f / 32.0f);
-			r1[offset + 2 * dx] += error * (2.0f / 32.0f);
-
-			r2[offset - 1 * dx] += error * (2.0f / 32.0f);
-			r2[offset + 0 * dx] += error * (3.0f / 32.0f);
-			r2[offset + 1 * dx] += error * (2.0f / 32.0f);
+			for (int my = 1; my < weight_matrix_height; my++) {
+				dither_error_t * const r = diffusion_matrix[my];
+				for (int mx = -weight_matrix_half_w; mx <= weight_matrix_half_w; mx++) {
+					r[offset + mx * dx] += error * *w++;
+				}
+			}
 		}
 
-		/*cr = 128 + 0.5 * nsvg__clampf(errors[0],-255, 255);
-		cg = 128 + 0.5 * nsvg__clampf(errors[0],-255, 255);
-		cb = 128 + 0.5 * nsvg__clampf(errors[0],-255, 255);*/
-
-		return cr | (cg << 8) | (cb << 16) | (ca << 24);
+		return RGBA{cr, cg, cb, ca};
 	}
 };
 
@@ -410,6 +442,7 @@ public:
 		NSVGcachedPaint *cache,
 		int x,
 		int y,
+		int direction,
 		int count) : cache(cache) {
 	}
 
@@ -417,8 +450,9 @@ public:
 		return true;
 	}
 
-	inline uint32_t operator()(int x, int d, float gy) const {
-		return cache->colors[(int)nsvg__clampf(gy*255.0f, 0, 255.0f)];
+	inline RGBA operator()(int x, float gy) const {
+		const uint32_t c = cache->colors[(int)nsvg__clampf(gy * 255.0f, 0, 255.0f)];
+		return RGBA{uint8_t(c), uint8_t(c >> 8), uint8_t(c >> 16), uint8_t(c >> 24)};
 	}
 };
 
@@ -438,9 +472,10 @@ public:
 		NSVGcachedPaint *cache,
 		int x,
 		int y,
+		int direction,
 		int count) :
 
-		dithering(r, cache, x, y, count),
+		dithering(r, cache, x, y, direction, count),
 		palette(r),
 
 		gradient(cache->tove.paint->gradient),
@@ -450,12 +485,13 @@ public:
 	}
 
 	static void init(
+		const NSVGrasterizer *r,
 		NSVGcachedPaint* cache,
 		NSVGpaint* paint,
 		float opacity) {
 
 		cache->tove.paint = paint;
-		cache->tove.ditherY = -Dithering::diffusion_matrix_height;
+		cache->tove.ditherY = -r->quality.dither.matrix_height;
 
 		NSVGgradientStop *stop = paint->gradient->stops;
 		const int n = paint->gradient->nstops;
@@ -471,7 +507,8 @@ public:
 		return stop + 1 < stopN;
 	}
 
-	inline uint32_t operator()(const int x, const int direction, const float gy) {
+	inline RGBA operator()(const int x, const float gy) {
+
 		while (gy >= (stop + 1)->tove.offset && (stop + 2) < stopN) {
 			stop++;
 		}
@@ -502,7 +539,6 @@ public:
 			cb0 * s + cb1 * t,
 			ca0 * s + ca1 * t,
 			x,
-			direction,
 			palette);
 	}
 };
@@ -530,9 +566,7 @@ void drawGradientScanline(
 	// TODO: plenty of opportunities to optimize.
 	float fx, fy, dx, gy;
 	int i, cr, cg, cb, ca;
-	unsigned int c;
 	const Gradient gradient(cache);
-	Colors colors(r, cache, x, y, count);
 
 	fx = ((float)x - tx) / scale;
 	fy = ((float)y - ty) / scale;
@@ -549,15 +583,17 @@ void drawGradientScanline(
 		i0 = count - 1;
 	}
 
+	Colors colors(r, cache, x, y, idir, count);
+
 	for (int k = 0; k < count; k++) {
 		const int i = i0 + k * idir;
 
 		int r,g,b,a,ia;
-		c = colors(x + i, idir, gradient(fx, fy));
-		cr = (c) & 0xff;
-		cg = (c >> 8) & 0xff;
-		cb = (c >> 16) & 0xff;
-		ca = (c >> 24) & 0xff;
+		const RGBA rgba = colors(x + i, gradient(fx, fy));
+		cr = rgba.r;
+		cg = rgba.g;
+		cb = rgba.b;
+		ca = rgba.a;
 
 		unsigned char *cover = cover0 + i;
 		a = nsvg__div255((int)cover[0] * ca);
@@ -605,17 +641,18 @@ inline void drawColorScanline(
 	const int cb0 = (cache->colors[0] >> 16) & 0xff;
 	const int ca0 = (cache->colors[0] >> 24) & 0xff;
 
-	Dithering dithering(r, cache, xmin, y, count);
+	Dithering dithering(r, cache, xmin, y, 1, count);
 	const Palette palette(r);
 
 	for (int i = 0; i < count; i++) {
-		int cr, cg, cb, ca;
-		dithering(
+		const RGBA rgba = dithering(
 			cr0, cg0, cb0, ca0,
-			cr, cg, cb, ca,
 			xmin + i,
-			1,
 			palette);
+		int cr = rgba.r;
+		int cg = rgba.g;
+		int cb = rgba.b;
+		int ca = rgba.a;
 
 		int r,g,b;
 		int a = nsvg__div255((int)cover[0] * ca);
@@ -648,40 +685,80 @@ TOVEscanlineFunction tove__initPaint(
 	float opacity,
 	bool &initCacheColors) {
 
-	if (r && SierraDithering::enabled(r)) {
+	if (r && (r->quality.palette || r->quality.dither.type != TOVE_DITHER_NONE)) {
 		switch (cache->type) {
 			case NSVG_PAINT_COLOR:
 				initCacheColors = true;
 				if (r->quality.palette) {
-					return drawColorScanline<SierraDithering, RestrictedPalette>;
+					switch (r->quality.dither.type) {
+						case TOVE_DITHER_NONE: {
+							return drawColorScanline<NoDithering, RestrictedPalette>;
+						} break;
+						case TOVE_DITHER_DIFFUSION: {
+							return drawColorScanline<DiffusionDithering, RestrictedPalette>;
+						} break;
+						case TOVE_DITHER_ORDERED: {
+							return drawColorScanline<OrderedDithering, RestrictedPalette>;
+						} break;
+					}
 				} else {
 					return drawColorScanline<NoDithering, UnrestrictedPalette>;
 				}
 				break;
 			case NSVG_PAINT_LINEAR_GRADIENT:
-				BestGradientColors<SierraDithering, AnyPalette>::init(cache, paint, opacity);
+				BestGradientColors<DiffusionDithering, AnyPalette>::init(
+					r, cache, paint, opacity);
 				initCacheColors = false;
 				if (r->quality.palette) {
-					return drawGradientScanline<
-						LinearGradient,
-						BestGradientColors<SierraDithering, RestrictedPalette>>;
+					switch (r->quality.dither.type) {
+						case TOVE_DITHER_NONE: {
+							return drawGradientScanline<
+								LinearGradient,
+								BestGradientColors<NoDithering, RestrictedPalette>>;
+						} break;
+						case TOVE_DITHER_DIFFUSION: {
+							return drawGradientScanline<
+								LinearGradient,
+								BestGradientColors<DiffusionDithering, RestrictedPalette>>;
+						} break;
+						case TOVE_DITHER_ORDERED: {
+							return drawGradientScanline<
+								LinearGradient,
+								BestGradientColors<OrderedDithering, RestrictedPalette>>;
+						} break;
+					}
 				} else {
 					return drawGradientScanline<
 						LinearGradient,
-						BestGradientColors<SierraDithering, UnrestrictedPalette>>;
+						BestGradientColors<DiffusionDithering, UnrestrictedPalette>>;
 				}
 				break;
 			case NSVG_PAINT_RADIAL_GRADIENT:
-				BestGradientColors<SierraDithering, AnyPalette>::init(cache, paint, opacity);
+				BestGradientColors<DiffusionDithering, AnyPalette>::init(
+					r, cache, paint, opacity);
 				initCacheColors = false;
 				if (r->quality.palette) {
-					return drawGradientScanline<
-						RadialGradient,
-						BestGradientColors<SierraDithering, RestrictedPalette>>;
+					switch (r->quality.dither.type) {
+						case TOVE_DITHER_NONE: {
+							return drawGradientScanline<
+								RadialGradient,
+								BestGradientColors<NoDithering, RestrictedPalette>>;
+						} break;
+						case TOVE_DITHER_DIFFUSION: {
+							return drawGradientScanline<
+								RadialGradient,
+								BestGradientColors<DiffusionDithering, RestrictedPalette>>;
+						} break;
+						case TOVE_DITHER_ORDERED: {
+							return drawGradientScanline<
+								RadialGradient,
+								BestGradientColors<OrderedDithering, RestrictedPalette>>;
+						} break;
+					}
 				} else {
 					return drawGradientScanline<
 						RadialGradient,
-						BestGradientColors<SierraDithering, UnrestrictedPalette>>;
+						BestGradientColors<DiffusionDithering, UnrestrictedPalette>>;
 				}
 				break;
 		}
@@ -709,7 +786,7 @@ bool tove__rasterize(
     float ty,
     float scale)
 {
-	if (!SierraDithering::allocate(r, w)) {
+	if (!DiffusionDithering::allocate(r, w)) {
 		return false;
 	}
 
