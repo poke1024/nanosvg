@@ -39,6 +39,12 @@ enum TOVEdithering {
 	ordered
 };
 
+struct TOVEnoise {
+	float amount;
+	const float *matrix;
+	int16_t n;
+};
+
 struct TOVErasterizerQuality {
 	struct {
 		TOVEdithering type;
@@ -47,7 +53,7 @@ struct TOVErasterizerQuality {
 		int16_t matrix_height;
 		float spread;
 	} dither;
-	float noise;
+	TOVEnoise noise;
 	void *palette;
 };
 

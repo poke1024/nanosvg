@@ -123,8 +123,17 @@ public:
 };
 
 class Noise {
-	const float noise;
+	const TOVEnoise &noise;
 	uint64_t s[2];
+
+	enum Type {
+		NOISE_NONE,
+		NOISE_WHITE,
+		NOISE_MATRIX
+	};
+
+	const Type type;
+	const float *matrix;
 
 	inline uint64_t xorshift128plus() {
 		// see https://de.wikipedia.org/wiki/Xorshift
@@ -137,8 +146,11 @@ class Noise {
 	}
 
 public:
-	inline Noise(float noise, int x, int y) : noise(noise) {
-		if (noise > 0.0f) {
+	inline Noise(const TOVEnoise &noise, int x, int y) :
+		noise(noise),
+		type(noise.amount > 0.0f ? (noise.matrix ? NOISE_MATRIX : NOISE_WHITE) : NOISE_NONE) {
+		
+		if (type == NOISE_WHITE) {
 			s[0] = y ^ 0x868e9b74cf54a3a8;
 			s[1] = x ^ 0x4a9f72f594298821;
 
@@ -146,15 +158,23 @@ public:
 			for (int i = 0; i < 10; i++) {
 				xorshift128plus();
 			}
+		} else if (type == NOISE_MATRIX) {
+			matrix = &noise.matrix[noise.n * (y % noise.n)];
 		}
 	}
 
-	inline float operator()() {
-		if (noise > 0.0f) {
-			const uint64_t random = xorshift128plus();
-			return noise * (int((random >> 10) & 0xff) * ((random & 20) ? 1 : -1));
-		} else {
-			return 0.0f;
+	inline float operator()(const int x) {
+		switch (type) {
+			case NOISE_NONE: {
+				return 0.0f;
+			} break;
+			case NOISE_WHITE: {
+				const uint64_t random = xorshift128plus();
+				return noise.amount * (int((random >> 10) & 0xff) * ((random & 20) ? 1 : -1));
+			} break;
+			case NOISE_MATRIX: {
+				return noise.amount * matrix[x % noise.n];
+			} break;
 		}
 	}
 };
@@ -188,7 +208,7 @@ public:
 		const int x,
 		const Palette &palette) {
 
-		const float d = spread * current_row[x % matrix_width] + noise();
+		const float d = spread * current_row[x % matrix_width] + noise(x);
 		
 		return palette(
 			int16_to_uint8(int16_t(f_cr + d)),
@@ -374,7 +394,7 @@ public:
 		const uint8_t cb = rgba.b;
 		const uint8_t ca = rgba.a;
 
-		const float bias = noise();
+		const float bias = noise(x);
 		const float errors[] = {
 			f_cr - cr + bias,
 			f_cg - cg + bias,
@@ -728,9 +748,21 @@ TOVEscanlineFunction tove__initPaint(
 						} break;
 					}
 				} else {
-					return drawGradientScanline<
-						LinearGradient,
-						BestGradientColors<DiffusionDithering, UnrestrictedPalette>>;
+					switch (r->quality.dither.type) {
+						case TOVE_DITHER_NONE: {
+							assert(false);
+						}; break;
+						case TOVE_DITHER_DIFFUSION: {
+							return drawGradientScanline<
+								LinearGradient,
+								BestGradientColors<DiffusionDithering, UnrestrictedPalette>>;
+						} break;
+						case TOVE_DITHER_ORDERED: {
+							return drawGradientScanline<
+								LinearGradient,
+								BestGradientColors<OrderedDithering, UnrestrictedPalette>>;
+						} break;
+					}
 				}
 				break;
 			case NSVG_PAINT_RADIAL_GRADIENT:
@@ -756,9 +788,21 @@ TOVEscanlineFunction tove__initPaint(
 						} break;
 					}
 				} else {
-					return drawGradientScanline<
-						RadialGradient,
-						BestGradientColors<DiffusionDithering, UnrestrictedPalette>>;
+					switch (r->quality.dither.type) {
+						case TOVE_DITHER_NONE: {
+							assert(false);
+						}; break;
+						case TOVE_DITHER_DIFFUSION: {
+							return drawGradientScanline<
+								RadialGradient,
+								BestGradientColors<DiffusionDithering, UnrestrictedPalette>>;
+						} break;
+						case TOVE_DITHER_ORDERED: {
+							return drawGradientScanline<
+								RadialGradient,
+								BestGradientColors<OrderedDithering, UnrestrictedPalette>>;
+						} break;
+					}
 				}
 				break;
 		}
