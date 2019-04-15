@@ -338,7 +338,7 @@ public:
 
 public:
 	static inline bool enabled(const NSVGrasterizer* r) {
-		return r->quality.dither.type == diffusion;
+		return r->quality.dither.type == TOVE_NSVG_DITHER_DIFFUSION;
 	}
 
 	static inline bool allocate(NSVGrasterizer* r, int w) {
@@ -705,19 +705,19 @@ TOVEscanlineFunction tove__initPaint(
 	float opacity,
 	bool &initCacheColors) {
 
-	if (r && (r->quality.palette || r->quality.dither.type != TOVE_DITHER_NONE)) {
+	if (r && (r->quality.palette || r->quality.dither.type != TOVE_NSVG_DITHER_NONE)) {
 		switch (cache->type) {
 			case NSVG_PAINT_COLOR:
 				initCacheColors = true;
 				if (r->quality.palette) {
 					switch (r->quality.dither.type) {
-						case TOVE_DITHER_NONE: {
+						case TOVE_NSVG_DITHER_NONE: {
 							return drawColorScanline<NoDithering, RestrictedPalette>;
 						} break;
-						case TOVE_DITHER_DIFFUSION: {
+						case TOVE_NSVG_DITHER_DIFFUSION: {
 							return drawColorScanline<DiffusionDithering, RestrictedPalette>;
 						} break;
-						case TOVE_DITHER_ORDERED: {
+						case TOVE_NSVG_DITHER_ORDERED: {
 							return drawColorScanline<OrderedDithering, RestrictedPalette>;
 						} break;
 					}
@@ -731,17 +731,17 @@ TOVEscanlineFunction tove__initPaint(
 				initCacheColors = false;
 				if (r->quality.palette) {
 					switch (r->quality.dither.type) {
-						case TOVE_DITHER_NONE: {
+						case TOVE_NSVG_DITHER_NONE: {
 							return drawGradientScanline<
 								LinearGradient,
 								BestGradientColors<NoDithering, RestrictedPalette>>;
 						} break;
-						case TOVE_DITHER_DIFFUSION: {
+						case TOVE_NSVG_DITHER_DIFFUSION: {
 							return drawGradientScanline<
 								LinearGradient,
 								BestGradientColors<DiffusionDithering, RestrictedPalette>>;
 						} break;
-						case TOVE_DITHER_ORDERED: {
+						case TOVE_NSVG_DITHER_ORDERED: {
 							return drawGradientScanline<
 								LinearGradient,
 								BestGradientColors<OrderedDithering, RestrictedPalette>>;
@@ -749,15 +749,15 @@ TOVEscanlineFunction tove__initPaint(
 					}
 				} else {
 					switch (r->quality.dither.type) {
-						case TOVE_DITHER_NONE: {
+						case TOVE_NSVG_DITHER_NONE: {
 							assert(false);
 						}; break;
-						case TOVE_DITHER_DIFFUSION: {
+						case TOVE_NSVG_DITHER_DIFFUSION: {
 							return drawGradientScanline<
 								LinearGradient,
 								BestGradientColors<DiffusionDithering, UnrestrictedPalette>>;
 						} break;
-						case TOVE_DITHER_ORDERED: {
+						case TOVE_NSVG_DITHER_ORDERED: {
 							return drawGradientScanline<
 								LinearGradient,
 								BestGradientColors<OrderedDithering, UnrestrictedPalette>>;
@@ -771,17 +771,17 @@ TOVEscanlineFunction tove__initPaint(
 				initCacheColors = false;
 				if (r->quality.palette) {
 					switch (r->quality.dither.type) {
-						case TOVE_DITHER_NONE: {
+						case TOVE_NSVG_DITHER_NONE: {
 							return drawGradientScanline<
 								RadialGradient,
 								BestGradientColors<NoDithering, RestrictedPalette>>;
 						} break;
-						case TOVE_DITHER_DIFFUSION: {
+						case TOVE_NSVG_DITHER_DIFFUSION: {
 							return drawGradientScanline<
 								RadialGradient,
 								BestGradientColors<DiffusionDithering, RestrictedPalette>>;
 						} break;
-						case TOVE_DITHER_ORDERED: {
+						case TOVE_NSVG_DITHER_ORDERED: {
 							return drawGradientScanline<
 								RadialGradient,
 								BestGradientColors<OrderedDithering, RestrictedPalette>>;
@@ -789,15 +789,15 @@ TOVEscanlineFunction tove__initPaint(
 					}
 				} else {
 					switch (r->quality.dither.type) {
-						case TOVE_DITHER_NONE: {
+						case TOVE_NSVG_DITHER_NONE: {
 							assert(false);
 						}; break;
-						case TOVE_DITHER_DIFFUSION: {
+						case TOVE_NSVG_DITHER_DIFFUSION: {
 							return drawGradientScanline<
 								RadialGradient,
 								BestGradientColors<DiffusionDithering, UnrestrictedPalette>>;
 						} break;
-						case TOVE_DITHER_ORDERED: {
+						case TOVE_NSVG_DITHER_ORDERED: {
 							return drawGradientScanline<
 								RadialGradient,
 								BestGradientColors<OrderedDithering, UnrestrictedPalette>>;

@@ -33,10 +33,10 @@ struct TOVEcachedPaint {
 	int32_t ditherSpan[2];
 };
 
-enum TOVEdithering {
-	none,
-	diffusion,
-	ordered
+enum TOVEditherType {
+	TOVE_NSVG_DITHER_NONE,
+	TOVE_NSVG_DITHER_DIFFUSION,
+	TOVE_NSVG_DITHER_ORDERED
 };
 
 struct TOVEnoise {
@@ -47,7 +47,7 @@ struct TOVEnoise {
 
 struct TOVErasterizerQuality {
 	struct {
-		TOVEdithering type;
+		TOVEditherType type;
 		const float *matrix;
 		int16_t matrix_width;
 		int16_t matrix_height;
