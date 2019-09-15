@@ -113,6 +113,12 @@ typedef struct NSVGgradientLink {
 	float xform[6];
 } NSVGgradientLink;
 
+enum NSVGpaintOrder {
+	NSVG_PAINTORDER_FILL = 0,
+	NSVG_PAINTORDER_STROKE = 1,
+	NSVG_PAINTORDER_COUNT = 2
+};
+
 typedef struct NSVGgradientStop {
 	unsigned int color;
 	float offset;
@@ -159,6 +165,7 @@ typedef struct NSVGshape
 	char strokeLineCap;			// Stroke cap type.
 	float miterLimit;			// Miter limit
 	char fillRule;				// Fill rule, see NSVGfillRule.
+	NSVGpaintOrder paintOrder[NSVG_PAINTORDER_COUNT];		// Paint order (see NSVGpaintOrder).
 	unsigned char flags;		// Logical or of NSVG_FLAGS_* flags
 	float bounds[4];			// Tight bounding box of the shape [minx,miny,maxx,maxy].
 	NSVGpath* paths;			// Linked list of paths in the image.
@@ -461,6 +468,7 @@ typedef struct NSVGattrib
 	char hasStroke;
 	char visible;
 	TOVEclipPathIndex clipPathCount;
+	NSVGpaintOrder paintOrder[NSVG_PAINTORDER_COUNT];
 } NSVGattrib;
 
 typedef struct NSVGparser
@@ -643,6 +651,7 @@ static void nsvg__curveBounds(float* bounds, float* curve)
 static NSVGparser* nsvg__createParser()
 {
 	NSVGparser* p;
+	int i;
 	p = (NSVGparser*)malloc(sizeof(NSVGparser));
 	if (p == NULL) goto error;
 	memset(p, 0, sizeof(NSVGparser));
@@ -667,6 +676,10 @@ static NSVGparser* nsvg__createParser()
 	p->attr[0].fillRule = NSVG_FILLRULE_NONZERO;
 	p->attr[0].hasFill = 1;
 	p->attr[0].visible = 1;
+
+	for (i = 0; i < NSVG_PAINTORDER_COUNT; i++) {
+		p->attr[0].paintOrder[i] = (NSVGpaintOrder)i;
+	}
 
 	return p;
 
@@ -1001,6 +1014,9 @@ static void nsvg__addShape(NSVGparser* p)
 	shape->miterLimit = attr->miterLimit;
 	shape->fillRule = attr->fillRule;
 	shape->opacity = attr->opacity;
+	for (i = 0; i < NSVG_PAINTORDER_COUNT; i++) {
+		shape->paintOrder[i] = attr->paintOrder[i];
+	}
 
 	shape->paths = p->plist;
 	p->plist = NULL;
@@ -1769,6 +1785,52 @@ static int nsvg__parseStrokeDashArray(NSVGparser* p, const char* str, float* str
 	return count;
 }
 
+static void nsvg__parsePaintOrder(NSVGpaintOrder* order, const char* str)
+{
+	int k = 0;
+	int seen = 0;
+	int p;
+	int len;
+	const char* tag;
+
+	while (*str && k < NSVG_PAINTORDER_COUNT) {
+		while (*str && nsvg__isspace(*str)) {
+			str++;
+		}
+
+		tag = str;
+		while (*str && !nsvg__isspace(*str)) {
+			str++;
+		}
+		len = str - tag;
+		if (len < 1) {
+			break;
+		}
+
+		if (len == 6 && strncmp(tag, "normal", 6) == 0) {
+			break;
+		} else if (len == 4 && strncmp(tag, "fill", 4) == 0) {
+			p = (int)NSVG_PAINTORDER_FILL;
+		} else if (len == 6 && strncmp(tag, "stroke", 6) == 0) {
+			p = (int)NSVG_PAINTORDER_STROKE;
+		} else {
+			continue; // ignore unknown tags
+		}
+
+		if (((seen >> p) & 1) == 0) {
+			order[k++] = (NSVGpaintOrder)p;
+			seen |= 1 << p;
+		}
+	}
+
+	for (p = 0; k < NSVG_PAINTORDER_COUNT && p < NSVG_PAINTORDER_COUNT; p++) {
+		if (((seen >> p) & 1) == 0) {
+			order[k++] = (NSVGpaintOrder)p;
+			seen |= 1 << p;
+		}
+	}
+}
+
 static void nsvg__parseStyle(NSVGparser* p, const char* str);
 
 static int nsvg__parseAttr(NSVGparser* p, const char* name, const char* value)
@@ -1847,6 +1909,8 @@ static int nsvg__parseAttr(NSVGparser* p, const char* name, const char* value)
 	} else if (strcmp(name, "id") == 0) {
 		strncpy(attr->id, value, 63);
 		attr->id[63] = '\0';
+	} else if (strcmp(name, "paint-order") == 0) {
+		nsvg__parsePaintOrder(attr->paintOrder, value);
 	} else {
 		return 0;
 	}
